@@ -119,7 +119,7 @@ class KVDatabaseTests(unittest.TestCase):
         db = self.open_db()
         db.put(b"cached", b"before")
         db.close()
-        checkpoint = self.path.with_name(self.path.name + ".index")
+        checkpoint = self.path.with_name(self.path.name + ".index") 
         self.assertTrue(checkpoint.exists())
 
         db = self.open_db()
@@ -132,7 +132,6 @@ class KVDatabaseTests(unittest.TestCase):
         self.assertEqual(db.get(b"cached"), b"before")
         self.assertEqual(db.get(b"after"), b"append")
         db.close()
-
 
 if __name__ == "__main__":
     unittest.main()
