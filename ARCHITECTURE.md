@@ -1,5 +1,4 @@
 # Architecture and Evidence
-
 ## Scope
 
 This document describes the implementation in `kvdb.py`, the CLI in `cli.py`, and the independent tester in `torture.py`. Evidence is intentionally conservative: a design argument is not marked as a passing test unless the corresponding test was actually run.
@@ -78,7 +77,6 @@ The exact fixed header is 30 bytes: `magic[4] + version[1] + record_type[1] + tx
 **Recoverability.** `open()` scans the authoritative file from byte zero, validating the magic, version, record type, declared lengths, frame completeness, and CRC32 before applying a record. It stops at the first invalid or incomplete tail, truncates the file to `last_good`, flushes, and fsyncs the repaired prefix before reopening for append. Valid committed batches are replayed, while incomplete batches remain invisible. This makes recovery deterministic for the valid prefix and prevents malformed tail bytes from becoming database state; exact kill injection at every individual system-call boundary remains outside the current test evidence.
 
 ## Recovery flow
-
 ```mermaid
 flowchart TD
     A[open data file] --> B[remove leftover compact temp]
