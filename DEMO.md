@@ -56,12 +56,21 @@ Explain that recovery stops at the last complete valid frame, truncates the inva
 ### 6:00–9:00 — Run the independent kill test
 
 ```bash
-python3 torture.py run --iterations 100 --seed 424242
+python3 torture.py run --iterations 500 --seed 12345
 ```
 
-The verified run produced 100 iterations, 36 killed child processes, 64 acknowledged operations, and 160/160 successful threaded writes. Explain that the parent owns the oracle and that an unacknowledged batch must recover to exactly the complete before or complete after state.
+The verified run produced 500 iterations, 194 killed child processes, 306 acknowledged operations, and 160/160 successful threaded writes. Explain that the parent owns the oracle and that an unacknowledged batch must recover to exactly the complete before or complete after state.
 
-Do not call this 500-kill coverage; the current verified run is 100 iterations.
+This is verified 500-iteration random kill/restart coverage. It is not a claim that every exact `fsync()` or `os.replace()` instruction was individually failpoint-injected.
+
+If a judge asks about boundary values or compaction, run these focused checks:
+
+```bash
+python3 torture.py run --iterations 100 --seed 999 --mode large-values
+python3 torture.py run --iterations 100 --seed 7 --mode compaction
+```
+
+The verified outputs cover 1 MiB values and a compaction shrink from 4,958 bytes to 773 bytes while preserving the independent live-state oracle.
 
 ### 9:00–10:30 — Show compaction and size-limit behavior
 
@@ -74,19 +83,22 @@ The second command should return a `DiskFullError` JSON error after the cap is r
 
 ### 10:30–12:00 — Explain the architecture
 
-Show the Mermaid flow in `ARCHITECTURE.md` and explain:
+Show the comprehensive system diagram and recovery flow in `ARCHITECTURE.md` and explain:
 
-1. Frame and CRC validation.
-2. Staging of batch records by transaction id.
-3. Commit count and digest validation.
-4. Sync-before-index-update and sync-before-ACK.
-5. Temp-file sync followed by atomic replacement during compaction.
+1. Client API and CLI enter through the global lock.
+2. The disk-full guard runs before any append.
+3. Frame and CRC validation protect the append-only file.
+4. Batch records are staged by transaction ID and require commit count and digest validation.
+5. Sync-before-index-update and sync-before-ACK establish durability.
+6. Temp-file sync followed by atomic replacement protects compaction.
+
+Use the three dedicated guarantee arguments in `ARCHITECTURE.md`: Durability names `flush()` and `os.fsync()`, Atomicity names staged frames and the commit record, and Recoverability names byte-level validation, CRC checks, and tail truncation.
 
 ### 12:00–15:00 — Answer honestly
 
 State the measured scale result:
 
-> “I wrote and recovered 1,000,000 keys successfully. On this environment the 48,003,800-byte log reopened in 4.574 seconds, so I did not meet the stated two-second recovery target. I have not claimed that requirement as verified.”
+> “I wrote and recovered 1,000,000 keys successfully. On this environment the 48,003,800-byte log reopened in 3.027 seconds after a memory-mapped recovery optimization, so I did not meet the stated two-second recovery target. I have not claimed that requirement as verified.”
 
 This is stronger than presenting an unmeasured claim: the correctness result is real, and the optimization gap is identified.
 

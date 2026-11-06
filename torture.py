@@ -22,7 +22,7 @@ import threading
 import time
 from pathlib import Path
 
-from kvdb import KVDatabase
+from kvdb import KVDatabase, MAX_VALUE
 
 
 def enc(value: bytes) -> str:
@@ -244,6 +244,65 @@ def run_thread_test() -> dict:
         return {"threads": 4, "writes": 160, "present": count}
 
 
+def run_large_values_test(iterations: int, seed: int) -> dict:
+    """Exercise the 1 MiB value boundary and verify reopen state independently."""
+    rng = random.Random(seed)
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "large-values.kdb"
+        oracle: dict[bytes, bytes] = {}
+        db = KVDatabase(path).open()
+        keys = [f"large-{i}".encode() for i in range(4)]
+        for step in range(iterations):
+            key = keys[rng.randrange(len(keys))]
+            if rng.random() < 0.75:
+                value = bytes([step % 251]) * MAX_VALUE
+                db.put(key, value)
+                oracle[key] = value
+            else:
+                db.delete(key)
+                oracle.pop(key, None)
+        db.close()
+        reopened = KVDatabase(path).open()
+        observed = {key: reopened.get(key) for key in keys}
+        reopened.close()
+        expected = {key: oracle.get(key) for key in keys}
+        if observed != expected:
+            raise AssertionError("large-value reopen state mismatch")
+        return {"iterations": iterations, "seed": seed, "value_bytes": MAX_VALUE,
+                "keys_checked": len(keys), "present": sum(value is not None for value in observed.values())}
+
+
+def run_compaction_test(iterations: int, seed: int) -> dict:
+    """Create obsolete log history, compact it, and verify the live oracle state."""
+    rng = random.Random(seed)
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "compaction.kdb"
+        oracle: dict[bytes, bytes] = {}
+        db = KVDatabase(path).open()
+        keys = [f"compact-{i}".encode() for i in range(20)]
+        for step in range(iterations):
+            key = keys[rng.randrange(len(keys))]
+            if rng.random() < 0.7:
+                value = f"value-{step}".encode()
+                db.put(key, value)
+                oracle[key] = value
+            else:
+                db.delete(key)
+                oracle.pop(key, None)
+        before = path.stat().st_size
+        db.compact()
+        after = path.stat().st_size
+        observed = {key: db.get(key) for key in keys}
+        db.close()
+        expected = {key: oracle.get(key) for key in keys}
+        if observed != expected:
+            raise AssertionError("compaction state mismatch")
+        if after > before:
+            raise AssertionError(f"compaction grew file: {before} -> {after}")
+        return {"iterations": iterations, "seed": seed, "before_bytes": before,
+                "after_bytes": after, "keys_checked": len(keys)}
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Independent crash torture tester")
     sub = parser.add_subparsers(dest="mode", required=True)
@@ -253,6 +312,7 @@ def main(argv=None) -> int:
     run.add_argument("--db", type=Path)
     run.add_argument("--iterations", type=int, default=100)
     run.add_argument("--seed", type=int, default=20261106)
+    run.add_argument("--mode", choices=("random", "large-values", "compaction"), default="random")
     args = parser.parse_args(argv)
     if args.mode == "worker":
         return child_main(args.path)
@@ -266,9 +326,14 @@ def main(argv=None) -> int:
     else:
         path = args.db
     try:
-        crash = run_crash_test(path, args.iterations, args.seed)
-        threads = run_thread_test()
-        print(json.dumps({"ok": True, "crash_test": crash, "thread_test": threads}, sort_keys=True))
+        if args.mode == "random":
+            result = {"crash_test": run_crash_test(path, args.iterations, args.seed),
+                      "thread_test": run_thread_test()}
+        elif args.mode == "large-values":
+            result = {"large_values_test": run_large_values_test(args.iterations, args.seed)}
+        else:
+            result = {"compaction_test": run_compaction_test(args.iterations, args.seed)}
+        print(json.dumps({"ok": True, **result}, sort_keys=True))
         return 0
     finally:
         if temporary is not None:
