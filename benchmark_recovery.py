@@ -14,7 +14,6 @@ from pathlib import Path
 
 from kvdb import KVDatabase
 
-
 def time_open(path: Path) -> float:
     started = time.perf_counter()
     db = KVDatabase(path).open()
@@ -23,7 +22,6 @@ def time_open(path: Path) -> float:
         raise AssertionError(f"expected 1,000,000 keys, got {len(db._index)}")
     db.close()
     return elapsed
-
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -46,7 +44,6 @@ def main() -> int:
         print(f"checkpointed_mean={statistics.mean(checkpointed):.6f}")
         print(f"full_scan_fallback_seconds={fallback:.6f}")
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
