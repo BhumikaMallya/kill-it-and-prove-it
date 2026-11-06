@@ -24,6 +24,9 @@ COMMIT = 3
 HEADER = struct.Struct(">4sBBQIIII")
 # Magic, version, record type, transaction id, and four uint32 fields.
 CRC = struct.Struct(">I")
+CHECKPOINT_MAGIC = b"KIDX1"
+CHECKPOINT_HEADER = struct.Struct(">5sQQQI")
+CHECKPOINT_ENTRY = struct.Struct(">II")
 MAX_KEY = 1024
 MAX_VALUE = 1024 * 1024
 
@@ -75,7 +78,8 @@ class KVDatabase:
                 temporary.unlink()
             self._file = open(self.path, "a+b", buffering=0)
             self._index.clear()
-            self._recover()
+            if not self._load_checkpoint():
+                self._recover()
             self._file.seek(0, os.SEEK_END)
             self._closed = False
             return self
@@ -87,6 +91,7 @@ class KVDatabase:
             assert self._file is not None
             self._file.flush()
             os.fsync(self._file.fileno())
+            self._write_checkpoint()
             self._file.close()
             self._file = None
             self._closed = True
@@ -226,7 +231,7 @@ class KVDatabase:
             self._next_txid = 1
             return
         last_good = 0
-        pending: dict[int, tuple[int, list[tuple[int, bytes, bytes]], list[bytes]]] = {}
+        pending: dict[int, tuple[int, list[tuple[int, bytes, bytes]], int]] = {}
         max_txid = 0
         mapped = mmap.mmap(self._file.fileno(), 0, access=mmap.ACCESS_READ)
         try:
@@ -253,35 +258,40 @@ class KVDatabase:
                 if zlib.crc32(mapped[start:payload_end]) & 0xFFFFFFFF != expected_crc:
                     break
 
-                payload = bytes(mapped[payload_start:payload_end])
-                frame = bytes(mapped[start:frame_end])
                 offset = frame_end
                 max_txid = max(max_txid, txid)
                 if record_type in (PUT, DELETE):
                     if txid == 0:
                         if op_count != 1 or op_index != 0:
                             break
-                        self._apply(record_type, payload[:key_len], payload[key_len:])
+                        # Ordinary records never participate in a commit digest;
+                        # avoid copying the complete frame just to discard it.
+                        self._apply(record_type,
+                                    bytes(mapped[payload_start:payload_start + key_len]),
+                                    bytes(mapped[payload_start + key_len:payload_end]))
                     else:
                         if op_count == 0 or op_index >= op_count:
                             break
                         if txid not in pending:
-                            pending[txid] = (op_count, [], [])
-                        expected, records, raw = pending[txid]
+                            pending[txid] = (op_count, [], 0)
+                        expected, records, digest = pending[txid]
                         if expected != op_count or len(records) != op_index:
                             break
+                        payload = bytes(mapped[payload_start:payload_end])
                         records.append((record_type, payload[:key_len], payload[key_len:]))
-                        raw.append(frame)
+                        digest = zlib.crc32(mapped[start:frame_end], digest) & 0xFFFFFFFF
+                        pending[txid] = (expected, records, digest)
                 else:
                     if txid == 0 or key_len != 0 or value_len != CRC.size or op_count == 0 or op_index != op_count:
                         break
                     item = pending.get(txid)
                     if item is None:
                         break
-                    expected, records, raw = item
+                    expected, records, digest = item
                     if expected != op_count or len(records) != expected:
                         break
-                    if CRC.unpack(payload)[0] != (zlib.crc32(b"".join(raw)) & 0xFFFFFFFF):
+                    payload = bytes(mapped[payload_start:payload_end])
+                    if CRC.unpack(payload)[0] != digest:
                         break
                     for record_type2, key, value in records:
                         self._apply(record_type2, key, value)
@@ -295,6 +305,68 @@ class KVDatabase:
             self._file.flush()
             os.fsync(self._file.fileno())
         self._next_txid = max(max_txid + 1, 1)
+
+    @property
+    def _checkpoint_path(self) -> Path:
+        return self.path.with_name(self.path.name + ".index")
+
+    def _load_checkpoint(self) -> bool:
+        """Load an advisory clean-close index cache, otherwise return False."""
+        assert self._file is not None
+        checkpoint = self._checkpoint_path
+        try:
+            stat = os.fstat(self._file.fileno())
+            with checkpoint.open("rb") as source:
+                header = source.read(CHECKPOINT_HEADER.size)
+                if len(header) != CHECKPOINT_HEADER.size:
+                    return False
+                magic, db_size, db_mtime_ns, next_txid, count = CHECKPOINT_HEADER.unpack(header)
+                if magic != CHECKPOINT_MAGIC or db_size != stat.st_size or db_mtime_ns != stat.st_mtime_ns:
+                    return False
+                loaded: dict[bytes, bytes] = {}
+                for _ in range(count):
+                    entry = source.read(CHECKPOINT_ENTRY.size)
+                    if len(entry) != CHECKPOINT_ENTRY.size:
+                        return False
+                    key_len, value_len = CHECKPOINT_ENTRY.unpack(entry)
+                    if not 1 <= key_len <= MAX_KEY or value_len > MAX_VALUE:
+                        return False
+                    key = source.read(key_len)
+                    value = source.read(value_len)
+                    if len(key) != key_len or len(value) != value_len:
+                        return False
+                    loaded[key] = value
+                if source.read(1):
+                    return False
+            self._index = loaded
+            self._next_txid = max(next_txid, 1)
+            return True
+        except (OSError, struct.error):
+            return False
+
+    def _write_checkpoint(self) -> None:
+        """Best-effort durable cache; the database file remains authoritative."""
+        assert self._file is not None
+        temporary = self._checkpoint_path.with_name(self._checkpoint_path.name + ".tmp")
+        try:
+            stat = os.fstat(self._file.fileno())
+            with temporary.open("wb", buffering=0) as target:
+                target.write(CHECKPOINT_HEADER.pack(
+                    CHECKPOINT_MAGIC, stat.st_size, stat.st_mtime_ns,
+                    self._next_txid, len(self._index)))
+                for key, value in self._index.items():
+                    target.write(CHECKPOINT_ENTRY.pack(len(key), len(value)))
+                    target.write(key)
+                    target.write(value)
+                target.flush()
+                os.fsync(target.fileno())
+            os.replace(temporary, self._checkpoint_path)
+            _fsync_directory(self._checkpoint_path.parent)
+        except OSError:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
 
     def _apply(self, record_type: int, key: bytes, value: bytes) -> None:
         if not 1 <= len(key) <= MAX_KEY or len(value) > MAX_VALUE:

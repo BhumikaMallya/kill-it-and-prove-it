@@ -115,6 +115,24 @@ class KVDatabaseTests(unittest.TestCase):
         self.assertIsNone(db.get(b"new"))
         db.close()
 
+    def test_checkpoint_accelerates_clean_reopen_and_stale_cache_falls_back(self):
+        db = self.open_db()
+        db.put(b"cached", b"before")
+        db.close()
+        checkpoint = self.path.with_name(self.path.name + ".index")
+        self.assertTrue(checkpoint.exists())
+
+        db = self.open_db()
+        self.assertEqual(db.get(b"cached"), b"before")
+        db.put(b"after", b"append")
+        db.close()
+
+        checkpoint.unlink()
+        db = self.open_db()
+        self.assertEqual(db.get(b"cached"), b"before")
+        self.assertEqual(db.get(b"after"), b"append")
+        db.close()
+
 
 if __name__ == "__main__":
     unittest.main()

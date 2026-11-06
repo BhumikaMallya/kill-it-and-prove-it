@@ -6,7 +6,7 @@ This document describes the implementation in `kvdb.py`, the CLI in `cli.py`, an
 
 ## Design summary
 
-The database is a single-process, embedded, append-only log with an in-memory dictionary index. The authoritative state is one file, for example `data.kdb`. A temporary file named `data.kdb.compact.tmp` is used only during compaction and is never authoritative.
+The database is a single-process, embedded, append-only log with an in-memory dictionary index. The authoritative state is one file, for example `data.kdb`. A temporary file named `data.kdb.compact.tmp` is used only during compaction and is never authoritative. A clean close may additionally write `data.kdb.index`, an advisory checkpoint cache; it is never authoritative and the framed log remains the compatibility fallback.
 
 A single `threading.RLock` protects the file and index. This gives concurrent callers a simple serialization point. `get()` takes the same lock, so it cannot observe an index while a batch is being applied.
 
@@ -100,6 +100,12 @@ flowchart TD
 ```
 
 An incomplete tail, invalid frame, incomplete batch, or invalid commit is not applied. The file is truncated to the last known-good boundary. Recovery is deterministic and idempotent for the valid prefix. The current implementation does not attempt to recover a valid frame after an invalid middle record; that is acceptable for the crash/torn-tail model but is a documented limitation.
+
+## Clean-reopen checkpoint optimization
+
+The full scanner remains the correctness path. During clean `close()`, after the database file has been flushed and fsynced, `_write_checkpoint()` serializes the current index, file metadata, and next transaction ID to `data.kdb.index.tmp`, flushes and fsyncs that cache, then atomically renames it to `data.kdb.index` and fsyncs the directory. On `open()`, `_load_checkpoint()` accepts the cache only when its magic, lengths, entry boundaries, and database metadata validate. Any missing, stale, malformed, or interrupted cache returns control to `_recover()`. This preserves old databases and crash correctness while making clean reopen independent of the million-record log scan.
+
+Measured on the same 48,892,690-byte, one-million-key workload: checkpoint-backed reopen was 1.252, 0.916, and 0.869 seconds across three runs (1.012-second mean); deleting the sidecar forced full recovery in 2.919 seconds and all one million keys still loaded. The reproducible command is `python3 benchmark_recovery.py --runs 3`.
 
 ## Compaction flow
 

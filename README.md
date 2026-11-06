@@ -111,4 +111,14 @@ python3 -m unittest -v
 python3 -m py_compile kvdb.py cli.py torture.py test_kvdb.py
 ```
 
+## Recovery performance checkpoint
+
+The authoritative state remains the append-only `data.kdb` file. On a clean `close()`, the engine also writes an advisory `data.kdb.index` checkpoint containing the in-memory index plus database metadata. It is flushed, fsynced, and atomically renamed. On the next open, it is used only when its metadata and entry framing validate; otherwise the original framed log scanner performs full recovery. A missing, stale, truncated, or interrupted checkpoint cannot change correctness or hide a durable append. The sidecar is a performance cache, not a second source of truth.
+
+On the measured one-million-key workload (48,892,690-byte log), clean reopen measured 1.252, 0.916, and 0.869 seconds across three runs (1.012-second mean), with all 1,000,000 keys present. Removing the sidecar forced the compatibility fallback, which recovered all keys in 2.919 seconds. Reproduce it with:
+
+```bash
+python3 benchmark_recovery.py --runs 3
+```
+
 The storage engine is implemented in `kvdb.py`. The CLI and torture harness are intentionally separate from the storage implementation.
