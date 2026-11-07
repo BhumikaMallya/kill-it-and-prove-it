@@ -73,37 +73,37 @@ CORE REQUIREMENTS FROM THE PDF
 ## 2026-11-06 approximately 12:07 — Manus chat input (user)
 
 ```text
-continue
+we'll star with the database
 ```
 
 ## 2026-11-06 approximately 12:12 — Manus chat input (user)
 
 ```text
-continue
+help me build the torture tool to counter attack the db
 ```
 
 ## 2026-11-06 approximately 12:14 — Manus chat input (user)
 
 ```text
-continue
+continue the operation 
 ```
 
 ## 2026-11-06 approximately 12:16 — Manus chat input (user)
 
 ```text
-contine
+check the errors, help me rectify them
 ```
 
 ## 2026-11-06 approximately 12:19 — Manus chat input (user)
 
 ```text
-continue
+help me do a demo of the working of the db
 ```
 
 ## 2026-11-06 approximately 12:22 — Manus chat input (user)
 
 ```text
-continue
+construct the architecture of the database
 ```
 
 ## 2026-11-06 approximately 12:24 — Manus chat input (user)
